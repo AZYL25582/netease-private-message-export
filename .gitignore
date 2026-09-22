@@ -1,0 +1,38 @@
+# ---- 登录凭据（等同于账号控制权，绝对不要提交）----
+cookies.json
+cookies*.json
+!examples/cookies.example.json
+tmp_raw.json
+*_raw.json
+
+# ---- 导出数据（含他人隐私，绝对不要提交）----
+netease_messages.json
+netease_messages.txt
+netease_messages_backup*
+netease_sessions.json
+images/
+images_manifest.json
+raw.json
+out/
+
+# ---- 运行痕迹 ----
+*.log
+.privacy-words
+
+# ---- 环境 ----
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.backup-*
+*.partial.json
+*.tmp-*
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
