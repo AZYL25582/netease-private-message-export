@@ -106,6 +106,19 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(msgs[2]['refCandidateId'],'1')
         self.assertNotIn('refText',msgs[2])
 
+    def test_append_conflicting_records_preserve_both_outputs(self):
+        out=self.p/'conflict'; export.export_data(self.raw(),out)
+        before={p.name:p.read_bytes() for p in out.iterdir()}
+        changes=[{'from':'对方','fromId':33}, {'time':1700000009000},
+                 {'type':23}, {'text':'SYNTHETIC-CHANGED'}, {'raw':{'refMsgId':9}}]
+        for change in changes:
+            with self.subTest(fields=tuple(change)):
+                m=message(); m.update(change)
+                source=self.raw('changed.json',messages=[m])
+                with self.assertRaisesRegex(ValueError,'conflict'):
+                    export.export_data(source,out,append=True)
+                self.assertEqual({p.name:p.read_bytes() for p in out.iterdir()},before)
+
     def test_sorted_empty_and_identity(self):
         source=self.raw(messages=[message(2),message(1)])
         d=export.export_data(source,self.p/'out')
@@ -224,6 +237,64 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(d['imageDir'],'custom'); self.assertEqual(d['imageDownloaded'],1)
         self.assertIn('custom/',(out/'netease_messages.txt').read_text(encoding='utf-8'))
         self.assertNotIn('imageErr',d['sessions'][0]['messages'][0])
+
+    def test_image_directory_change_reuses_verified_cache(self):
+        m=message(); m['type']=16; m['raw']={'picInfo':{'picUrl':'https://p1.music.126.net/synthetic.png'}}
+        source=self.raw(messages=[m]); out=self.p/'out'; export.export_data(source,out)
+        data=b'\x89PNG\r\n\x1a\n'+b'SYNTHETIC'*32
+        with patch.object(images,'fetch',return_value=data):
+            self.assertEqual(images.download(out/'netease_messages.json',out/'first'),0)
+        with patch.object(images,'fetch',side_effect=AssertionError('Cache must avoid network')):
+            self.assertEqual(images.download(out/'netease_messages.json',out/'second'),0)
+        d=export.export_data(source,out,append=True); saved=d['sessions'][0]['messages'][0]
+        self.assertEqual(d['imageDir'],'second')
+        self.assertEqual((out/'second'/saved['imageFile']).read_bytes(),data)
+        self.assertEqual((out/'first'/saved['imageFile']).read_bytes(),data)
+        self.assertEqual((d['imageDownloaded'],d['imageFailed']),(1,0))
+        self.assertIn('second/'+saved['imageFile'],(out/'netease_messages.txt').read_text(encoding='utf-8'))
+
+    def test_failed_image_directory_change_clears_stale_references(self):
+        m=message(); m['type']=16; m['raw']={'picInfo':{'picUrl':'https://p1.music.126.net/synthetic.png'}}
+        source=self.raw(messages=[m]); out=self.p/'out'; export.export_data(source,out)
+        data=b'\x89PNG\r\n\x1a\n'+b'SYNTHETIC'*32
+        with patch.object(images,'fetch',return_value=data):
+            images.download(out/'netease_messages.json',out/'first')
+        old=json.loads((out/'netease_messages.json').read_text(encoding='utf-8'))
+        saved=old['sessions'][0]['messages'][0]
+        old_file=out/'first'/saved['imageFile']
+        with patch.object(images,'fetch',side_effect=OSError('SYNTHETIC-OFFLINE')), \
+                patch.object(images,'atomic_write',side_effect=OSError('SYNTHETIC-DISK-FAILURE')):
+            self.assertEqual(images.download(out/'netease_messages.json',out/'second'),1)
+        d=export.export_data(source,out,append=True); failed=d['sessions'][0]['messages'][0]
+        self.assertEqual((d['imageDownloaded'],d['imageFailed']),(0,1))
+        for key in ('imageFile','imageBytes','imageSHA256'):
+            self.assertNotIn(key,failed)
+        self.assertTrue(failed['imageErr'])
+        self.assertEqual(old_file.read_bytes(),data)
+        text=(out/'netease_messages.txt').read_text(encoding='utf-8')
+        self.assertNotIn('second/'+saved['imageFile'],text)
+        self.assertIn(m['raw']['picInfo']['picUrl'],text)
+
+    def test_legacy_failed_image_is_not_rendered_or_counted_as_success(self):
+        m=message(); m['type']=16; m['raw']={'picInfo':{'picUrl':'https://p1.music.126.net/synthetic.png'}}
+        source=self.raw(messages=[m]); out=self.p/'out'; d=export.export_data(source,out)
+        d['sessions'][0]['messages'][0].update(imageFile='SYNTHETIC-MISSING.png',imageErr='SYNTHETIC-FAILED')
+        (out/'netease_messages.json').write_text(json.dumps(d),encoding='utf-8')
+        refreshed=export.export_data(source,out,append=True)
+        self.assertEqual((refreshed['imageDownloaded'],refreshed['imageFailed']),(0,1))
+        text=(out/'netease_messages.txt').read_text(encoding='utf-8')
+        self.assertNotIn('SYNTHETIC-MISSING.png',text)
+        self.assertIn(m['raw']['picInfo']['picUrl'],text)
+
+    def test_cached_image_directory_outside_export_is_rejected(self):
+        m=message(); m['type']=16; m['raw']={'picInfo':{'picUrl':'https://p1.music.126.net/synthetic.png'}}
+        source=self.raw(messages=[m]); out=self.p/'out'; d=export.export_data(source,out)
+        d['imageDir']='../outside'
+        target=out/'netease_messages.json'
+        target.write_text(json.dumps(d),encoding='utf-8'); before=target.read_bytes()
+        with patch.object(images,'fetch',return_value=b'\x89PNG\r\n\x1a\nSYNTHETIC'):
+            with self.assertRaises(ValueError): images.download(target,out/'second')
+        self.assertEqual(target.read_bytes(),before)
 
     @unittest.skipUnless(sys.platform=='win32','Windows DPAPI only')
     def test_windows_dpapi_synthetic_roundtrip(self):
