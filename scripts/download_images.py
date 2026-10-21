@@ -101,6 +101,8 @@ def download(json_file, image_dir=None):
     root = source.parent.resolve()
     image_dir = output_path(image_dir or root/'images').resolve()
     if root not in image_dir.parents: raise ValueError('Image directory must be inside the export directory')
+    cached_dir = output_path(root/d.get('imageDir','images')).resolve()
+    if root not in cached_dir.parents: raise ValueError('Cached image directory must be inside the export directory')
     image_dir.mkdir(parents=True,exist_ok=True)
     manifest = []
     for m in d['sessions'][0]['messages']:
@@ -110,10 +112,9 @@ def download(json_file, image_dir=None):
             validate_url(m['picUrl'])
             data = None
             old_name = m.get('imageFile','')
-            if (d.get('imageDir') == image_dir.relative_to(root).as_posix()
-                    and re.fullmatch(r'[0-9a-f]{64}\.(?:jpg|png|gif|webp)',old_name)
+            if (re.fullmatch(r'[0-9a-f]{64}\.(?:jpg|png|gif|webp)',old_name)
                     and m.get('imageSHA256') == old_name.split('.')[0]):
-                old_file = output_path(image_dir/old_name)
+                old_file = output_path(cached_dir/old_name)
                 if old_file.is_file() and old_file.stat().st_size <= MAX_BYTES:
                     prior = old_file.read_bytes()
                     if len(prior)==m.get('imageBytes') and hashlib.sha256(prior).hexdigest()==m['imageSHA256']:
@@ -131,6 +132,9 @@ def download(json_file, image_dir=None):
             row.update(ok=True,file=name,bytes=len(data),sha256=digest)
         except (OSError,ValueError,http.client.HTTPException):
             # No URLs, credential-like query strings, server bodies or local paths in errors.
+            # Old files remain on disk, but may not exist in the selected directory.
+            for key in ('imageFile','imageBytes','imageSHA256'):
+                m.pop(key,None)
             m['imageErr'] = 'image_download_failed_or_refused'
             row['error'] = m['imageErr']
         manifest.append(row)
